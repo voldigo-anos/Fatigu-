@@ -1,69 +1,161 @@
 const axios = require('axios');
+const validUrl = require('valid-url');
+const fs = require('fs');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
+const fonts = require('../../func/font.js');
 
-const fonts = {
+const API_ENDPOINT = "https://shizuai.vercel.app/chat";
+const CLEAR_ENDPOINT = "https://shizuai.vercel.app/chat/clear";
+const TMP_DIR = path.join(__dirname, 'tmp');
 
-    mathsans: {
-        a: "𝖺", b: "𝖻", c: "𝖼", d: "𝖽", e: "𝖾", f: "𝖿", g: "𝗀", h: "𝗁", i: "𝗂",
-    j: "𝗃", k: "𝗄", l: "𝗅", m: "𝗆", n: "𝗇", o: "𝗈", p: "𝗉", q: "𝗊", r: "𝗋",
-    s: "𝗌", t: "𝗍", u: "𝗎", v: "𝗏", w: "𝗐", x: "𝗑", y: "𝗒", z: "𝗓",
-    A: "𝗔", B: "𝗕", C: "𝗖", D: "𝗗", E: "𝗘", F: "𝗙", G: "𝗚", H: "𝗛", I: "𝗜",
-    J: "𝗝", K: "𝗞", L: "𝗟", M: "𝗠", N: "𝗡", O: "𝗢", P: "𝗣", Q: "𝗤", R: "𝗥",
-    S: "𝗦", T: "𝗧", U: "𝗨", V: "𝗩", W: "𝗪", X: "𝗫", Y: "𝗬", Z: "𝗭"
-    }
+if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
+
+/* ================= FORMAT TEXT ================= */
+
+const formatCoolText = (text) => {
+  if (!text) return "";
+
+  let formatted = text
+    .replace(/Heck\.ai/gi, "Christus")
+    .replace(/Aryan/gi, "Christus")
+    .replace(/Shizu AI|Shizuka AI|Shizuka|Shizu/gi, "Christus AI");
+
+  formatted = formatted.replace(/\*(.*?)\*/g, (_, p1) => fonts.serif(p1));
+  return fonts.sansSerif(formatted);
 };
 
-const Prefixes = [
-  'voldi',
-  'voldigo',
-  'anos',
-  'ask',
-  'an', 
-];
+/* ================= DOWNLOAD ================= */
+
+const downloadFile = async (url, ext) => {
+  const filePath = path.join(TMP_DIR, `${uuidv4()}.${ext}`);
+  const response = await axios.get(url, { responseType: 'arraybuffer' });
+  fs.writeFileSync(filePath, Buffer.from(response.data));
+  return filePath;
+};
+
+/* ================= RESET ================= */
+
+const resetConversation = async (api, event, message) => {
+  api.setMessageReaction("♻️", event.messageID, () => {}, true);
+  try {
+    await axios.delete(`${CLEAR_ENDPOINT}/${event.senderID}`);
+    return message.reply("✅ Conversation reset.");
+  } catch {
+    return message.reply("❌ Reset failed.");
+  }
+};
+
+/* ================= AI HANDLER ================= */
+
+const handleAIRequest = async (api, event, userInput, message, isReply = false) => {
+  const userId = event.senderID;
+  let imageUrl = null;
+  let messageContent = userInput;
+
+  api.setMessageReaction("⏳", event.messageID, () => {}, true);
+
+  if (event.messageReply) {
+    const att = event.messageReply.attachments?.[0];
+    if (att?.type === 'photo') imageUrl = att.url;
+  }
+
+  const urlMatch = messageContent.match(/(https?:\/\/[^\s]+)/)?.[0];
+  if (urlMatch && validUrl.isWebUri(urlMatch)) {
+    imageUrl = urlMatch;
+    messageContent = messageContent.replace(urlMatch, '').trim();
+  }
+
+  if (!messageContent && !imageUrl) {
+    api.setMessageReaction("❌", event.messageID, () => {}, true);
+    return message.reply("💬 Provide a message or image.");
+  }
+
+  try {
+    const response = await axios.post(
+      API_ENDPOINT,
+      { uid: userId, message: messageContent, image_url: imageUrl },
+      { timeout: 60000 }
+    );
+
+    const {
+      reply,
+      image_url,
+      music_data,
+      video_data,
+      shotti_data
+    } = response.data;
+
+    const finalBody = formatCoolText(reply);
+    const attachments = [];
+
+    if (image_url) attachments.push(fs.createReadStream(await downloadFile(image_url, 'jpg')));
+    if (music_data?.downloadUrl) attachments.push(fs.createReadStream(await downloadFile(music_data.downloadUrl, 'mp3')));
+    if (video_data?.downloadUrl) attachments.push(fs.createReadStream(await downloadFile(video_data.downloadUrl, 'mp4')));
+    if (shotti_data?.videoUrl) attachments.push(fs.createReadStream(await downloadFile(shotti_data.videoUrl, 'mp4')));
+
+    const sent = await message.reply({
+      body: finalBody,
+      attachment: attachments.length ? attachments : undefined
+    });
+
+    if (sent?.messageID) {
+      global.GoatBot.onReply.set(sent.messageID, {
+        commandName: 'ai',
+        messageID: sent.messageID,
+        author: userId
+      });
+    }
+
+    api.setMessageReaction("✅", event.messageID, () => {}, true);
+
+  } catch (err) {
+    api.setMessageReaction("❌", event.messageID, () => {}, true);
+    return message.reply("⚠️ AI Error.");
+  }
+};
+
+/* ================= EXPORT ================= */
 
 module.exports = {
   config: {
-    name: "ask",
-    version: 1.0,
-    author: "Aesther",
-    longDescription: "AI",
-    category: "ai",
-    guide: {
-      en: "{p} questions",
-    },
+    name: 'ai',
+    aliases: [],
+    version: '2.2.0',
+    author: 'Christus',
+    role: 0,
+    category: 'ai'
   },
-  onStart: async function () {},
-  onChat: async function ({ api, event, args, message }) {
-    try {
 
-      const prefix = Prefixes.find((p) => event.body && event.body.toLowerCase().startsWith(p));
-      if (!prefix) {
-        return; // Invalid prefix, ignore the command
-      }
-      const prompt = event.body.substring(prefix.length).trim();
-      if (!prompt) {
-        await message.reply("");
-api.sendMessage({ sticker: "5399156300166" }, event.threadID);
-api.sendMessage("🍓 𝘚𝘈𝘓𝘜𝘛🤓" , event.threadID);
-api.setMessageReaction("🍓", event.messageID, () => {}, true);
-        return;
-      }
-      const senderID = event.senderID;
-      const senderInfo = await api.getUserInfo([senderID]);
-      const senderName = senderInfo[senderID].name;
-      const response = await axios.get(`https://api.kenliejugarap.com/freegpt4o8k/?question=${encodeURIComponent(prompt)}`);
-      const answer = `🍓══════◄••❀••►══════🍓 :\n\n${response.data.response} 🟡`;
-api.setMessageReaction("🍓", event.messageID, () => {}, true);
+  onStart: async function ({ api, event, args, message }) {
+    const input = args.join(' ').trim();
+    if (!input) return message.reply("❗ Enter a message.");
 
-      //apply const font to each letter in the answer
-      let formattedAnswer = "";
-      for (let letter of answer) {
-        formattedAnswer += letter in fonts.mathsans ? fonts.mathsans[letter] : letter;
-      }
-
-      await message.reply(formattedAnswer);
-
-    } catch (error) {
-      console.error("Error:", error.message);
+    if (['clear', 'reset'].includes(input.toLowerCase())) {
+      return resetConversation(api, event, message);
     }
+
+    return handleAIRequest(api, event, input, message);
+  },
+
+  onReply: async function ({ api, event, Reply, message }) {
+    if (event.senderID !== Reply.author) return;
+    return handleAIRequest(api, event, event.body, message, true);
+  },
+
+  /* ===== NO PREFIX COMME TA CMD ===== */
+  onChat: async function ({ api, event, message }) {
+    const body = event.body?.trim();
+    if (!body?.toLowerCase().startsWith('ai ')) return;
+
+    const input = body.slice(3).trim();
+    if (!input) return;
+
+    if (['clear', 'reset'].includes(input.toLowerCase())) {
+      return resetConversation(api, event, message);
+    }
+
+    return handleAIRequest(api, event, input, message);
   }
 };
+    
